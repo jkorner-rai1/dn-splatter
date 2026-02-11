@@ -28,6 +28,7 @@ include = ["dn_splatter*"]
 dn_splatter = 'dn_splatter.dn_config:dn_splatter'
 ags_mesh = 'dn_splatter.dn_config:ags_mesh'
 dn_splatter_big = 'dn_splatter.dn_config:dn_splatter_big'
+dn_splatter_colorwarmup = 'dn_splatter.dn_config:dn_splatter_colorwarmup'
 #g-nerfacto = 'dn_splatter.eval.eval_configs:gnerfacto'
 #g-depthfacto = 'dn_splatter.eval.eval_configs:gdepthfacto'
 #g-neusfacto = 'dn_splatter.eval.eval_configs:gneusfacto'
