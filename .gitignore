@@ -6,6 +6,7 @@ dn_splatter.egg-info/
 omnidata_ckpt/
 pretrained_models/
 mesh_exports/
+renders/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

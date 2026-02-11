@@ -4,6 +4,7 @@ from dn_splatter.data.normal_nerfstudio import NormalNerfstudioConfig
 from dn_splatter.dn_datamanager import DNSplatterManagerConfig
 from dn_splatter.dn_model import DNSplatterModelConfig
 from dn_splatter.dn_pipeline import DNSplatterPipelineConfig
+from dn_splatter.engine.schedulers import FreezeThenDecaySchedulerConfig, FreezeThenFixedSchedulerConfig, MultiStepLRSchedulerConfig
 from nerfstudio.configs.base_config import ViewerConfig
 from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
@@ -70,6 +71,84 @@ dn_splatter = MethodSpecification(
         vis="viewer",
     ),
     description="DN-Splatter: depth and normal priors for 3DGS",
+)
+
+dn_splatter_colorwarmup = MethodSpecification(
+    config=TrainerConfig(
+        method_name="dn-splatter-colorwarmup",
+        steps_per_eval_image=500,
+        steps_per_eval_batch=500,
+        steps_per_save=1000000,
+        steps_per_eval_all_images=1000000,
+        max_num_iterations=30000,
+        mixed_precision=False,
+        gradient_accumulation_steps={"camera_opt": 100, "color": 10, "shs": 10},
+        pipeline=DNSplatterPipelineConfig(
+            datamanager=DNSplatterManagerConfig(
+                dataparser=NormalNerfstudioConfig(load_3D_points=True)
+            ),
+            model=DNSplatterModelConfig(regularization_strategy="dn-splatter"),
+        ),
+        optimizers={
+            "means": {
+                "optimizer": AdamOptimizerConfig(lr=1.6e-4, eps=1e-15),
+                "scheduler": FreezeThenDecaySchedulerConfig(
+                    freeze_steps=1000,
+                    lr_final=1.6e-6,
+                    max_steps=30000,
+                ),
+            },
+            "features_dc": {
+                "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
+                "scheduler": MultiStepLRSchedulerConfig(
+                    milestones=[1000],
+                    lrs=[0.008, 0.0025],  # Keep lr the same but change scheduler to step after warmup),
+                ),
+            },
+            "features_rest": {
+                "optimizer": AdamOptimizerConfig(lr=0.0025 / 20, eps=1e-15),
+                "scheduler": FreezeThenFixedSchedulerConfig(
+                    freeze_steps=1000,
+                    fixed_lr=0.0025 / 20,
+                ),
+            },
+            "opacities": {
+                "optimizer": AdamOptimizerConfig(lr=0.05, eps=1e-15),
+                "scheduler": None,
+            },
+            "scales": {
+                "optimizer": AdamOptimizerConfig(lr=0.005, eps=1e-15),
+                "scheduler": MultiStepLRSchedulerConfig(
+                    milestones=[1000],
+                    lrs=[0.001, 0.005],  # Keep lr the same but change scheduler to step after warmup),
+                ),
+            },
+            "quats": {
+                "optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15),
+                "scheduler": None,
+            },
+            "camera_opt": {
+                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
+                "scheduler": FreezeThenDecaySchedulerConfig(
+                    freeze_steps=1000,
+                    lr_final=5e-7,
+                    max_steps=30000,
+                ),
+            },
+            "normals": {
+                "optimizer": AdamOptimizerConfig(
+                    lr=1e-3, eps=1e-15
+                ),  # this does nothing, its just here to make the trainer happy
+                "scheduler": FreezeThenFixedSchedulerConfig(
+                    freeze_steps=1000,
+                    fixed_lr=1e-3,
+                ),
+            },
+        },
+        viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
+        vis="viewer",
+    ),
+    description="DN-Splatter Colorwarmup: depth and normal priors for 3DGS, with focus on color reconstruction on first iterations",
 )
 
 ags_mesh = MethodSpecification(

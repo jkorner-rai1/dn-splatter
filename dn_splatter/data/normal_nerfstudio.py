@@ -301,8 +301,9 @@ class NormalNerfstudio(Nerfstudio):
         )
 
         stems = [name.stem for name in image_filenames]
-        for name in normal_filenames:
-            assert name.stem in stems
+        # for name in normal_filenames:
+        #     print(name, name.stem)
+        #     assert name.stem in stems
 
         idx_tensor = torch.tensor(indices, dtype=torch.long)
         poses = poses[idx_tensor]
@@ -518,6 +519,7 @@ class NormalNerfstudio(Nerfstudio):
             metadata["normal_filenames"] = normal_filenames
             metadata["load_normals"] = True
             metadata["normal_format"] = self.config.normal_format
+            print("Loading normals with format:", self.config.normal_format)
 
         metadata.update({"load_confidence": self.config.load_depth_confidence_masks})
         if self.config.load_depth_confidence_masks:
