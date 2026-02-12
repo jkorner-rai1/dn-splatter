@@ -581,15 +581,15 @@ class DNSplatterModel(SplatfactoModel):
 
             # 3. Prepare Normals [N, 3]
             # (Assuming you use the manual quat_to_rotmat defined previously)
-            rots = quat_to_rotmat(quats_crop)
+            #  rots = quat_to_rotmat(quats_crop)
             min_scale_indices = torch.argmin(scales_crop, dim=-1)
-            normals = rots[torch.arange(len(min_scale_indices)), :, min_scale_indices]
+            # normals = rots[torch.arange(len(min_scale_indices)), :, min_scale_indices]
 
             # View-dependent flip (so normals face the camera)
 
             # Transform to Camera Space
-            world_to_cam_rot = camera.camera_to_worlds.squeeze(0)[:3, :3].T
-            normals_cam = normals @ world_to_cam_rot
+            # world_to_cam_rot = camera.camera_to_worlds.squeeze(0)[:3, :3].T
+            #  normals_cam = normals @ world_to_cam_rot
 
             # 4. Concatenate into [N, 6]
             concatenated_features = torch.cat([colors_rgb, normals_cam], dim=-1)
@@ -611,6 +611,7 @@ class DNSplatterModel(SplatfactoModel):
                 sparse_grad=False,
                 absgrad=True,
                 rasterize_mode=self.config.rasterize_mode,
+                render_mode=render_mode,
                 backgrounds=None,
             )
 
