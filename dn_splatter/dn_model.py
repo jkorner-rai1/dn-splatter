@@ -289,7 +289,7 @@ class DNSplatterModel(SplatfactoModel):
     @property
     def normals(self):
         return self.gauss_params["normals"]
-
+    
     def refinement_after(self, optimizers: Optimizers, step):
         assert step == self.step
         if self.step <= self.config.warmup_length:
@@ -322,10 +322,10 @@ class DNSplatterModel(SplatfactoModel):
                     self.scales.exp().max(dim=-1).values
                     > self.config.densify_size_thresh
                 ).squeeze()
-                if self.step < self.config.stop_screen_size_at:
-                    splits |= (
-                        self.max_2Dsize > self.config.split_screen_size
-                    ).squeeze()
+                # if self.step < self.config.stop_screen_size_at:
+                #     splits |= (
+                #         self.max_2Dsize > self.config.split_screen_size
+                #     ).squeeze()
                 splits &= high_grads
                 nsamps = self.config.n_split_samples
                 split_params = self.split_gaussians(splits, nsamps)
@@ -614,7 +614,14 @@ class DNSplatterModel(SplatfactoModel):
                 render_mode=render_mode,
                 backgrounds=None,
             )
-
+            if self.training and info["means2d"].requires_grad:
+                info["means2d"].retain_grad()
+            self.xys = info["means2d"]  # [1, N, 2]
+            self.radii = info["radii"]  # [N]
+            alpha = alpha[:, ...]
+            self.depths = info["depths"]
+            self.conics = info["conics"]
+            self.num_tiles_hit = info["tiles_per_gauss"]
             # 4. SPLIT THE OUTPUT
             # render will have shape [Batch, H, W, 6] (or more if RGB+ED was used)
             rgb = render[:, :, :, 0:3]
@@ -1021,7 +1028,76 @@ class DNSplatterModel(SplatfactoModel):
         }
 
         return metrics_dict, images_dict
+    
+    def after_train(self, step: int):
+        assert step == self.step
+        # to save some training time, we no longer need to update those stats post refinement
+        if self.step >= self.config.stop_split_at:
+            return
+        with torch.no_grad():
+            
+            # keep track of a moving average of grad norms
+            visible_mask = (self.radii > 0).flatten()
+            assert self.xys.grad is not None
+            grads = self.xys.grad.detach().norm(dim=-1)
+            # print(f"grad norm min {grads.min().item()} max {grads.max().item()} mean {grads.mean().item()} size {grads.shape}")
+            
+            if self.xys_grad_norm is None or self.xys_grad_norm.shape[0] != grads.shape[0]:
+                self.xys_grad_norm = grads
+                self.vis_counts = torch.ones_like(self.xys_grad_norm)
+            else:
+                assert self.vis_counts is not None
+                self.vis_counts[visible_mask] = self.vis_counts[visible_mask] + 1
+                self.xys_grad_norm[visible_mask] = grads[visible_mask] + self.xys_grad_norm[visible_mask]
 
+            # update the max screen size, as a ratio of number of pixels
+            # TODO, this is a fix, since we are not pruning the gaussians based on 2D size atm
+            # self.max_2Dsize = torch.zeros_like(self.radii, dtype=torch.float32)
+            if self.max_2Dsize is None or self.max_2Dsize.shape[0] != self.radii.shape[0]:
+                self.max_2Dsize = torch.zeros_like(self.radii, dtype=torch.float32)
+            else:
+                print(f"Debug: shapes of radii {self.radii.shape} max_2Dsize {self.max_2Dsize.shape}")
+            newradii = self.radii.detach()[visible_mask]
+            self.max_2Dsize[visible_mask] = torch.maximum(
+                self.max_2Dsize[visible_mask],
+                newradii / float(max(self.last_size[0], self.last_size[1])),
+            )
+            
+    def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None):
+        """
+        This function deletes gaussians with under a certain opacity threshold
+        extra_cull_mask: a mask indicates extra gaussians to cull besides existing culling criterion
+        """
+        n_bef = self.num_points
+        # cull transparent ones
+        culls = (torch.sigmoid(self.opacities) < self.config.cull_alpha_thresh).squeeze()
+        below_alpha_count = torch.sum(culls).item()
+        toobigs_count = 0
+        if extra_cull_mask is not None:
+            culls = culls | extra_cull_mask
+        if self.step > self.config.refine_every * self.config.reset_alpha_every:
+            # cull huge ones
+            toobigs = (torch.exp(self.scales).max(dim=-1).values > self.config.cull_scale_thresh).squeeze()
+            if self.step < self.config.stop_screen_size_at:
+                # cull big screen space
+                assert self.max_2Dsize is not None
+                toobigs = toobigs | (self.max_2Dsize > self.config.cull_screen_size).squeeze()
+            culls = culls | toobigs
+            toobigs_count = torch.sum(toobigs).item()
+        self.means = Parameter(self.means[~culls].detach())
+        self.scales = Parameter(self.scales[~culls].detach())
+        self.quats = Parameter(self.quats[~culls].detach())
+        self.features_dc = Parameter(self.features_dc[~culls].detach())
+        self.features_rest = Parameter(self.features_rest[~culls].detach())
+        self.opacities = Parameter(self.opacities[~culls].detach())
+
+        CONSOLE.log(
+            f"Culled {n_bef - self.num_points} gaussians "
+            f"({below_alpha_count} below alpha thresh, {toobigs_count} too bigs, {self.num_points} remaining)"
+        )
+
+        return culls
+    
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
@@ -1032,12 +1108,12 @@ class DNSplatterModel(SplatfactoModel):
                 args=[training_callback_attributes.optimizers],
             )
         )
-        # The order of these matters
-        # cbs.append(
-        #     TrainingCallback(
-        #         [TrainingCallbackLocation.AFTER_TRAIN_ITERATION], self.step_post_backward, self.step
-        #     )
-        # )
+       # The order of these matters
+        cbs.append(
+            TrainingCallback(
+                [TrainingCallbackLocation.AFTER_TRAIN_ITERATION], self.after_train
+            )
+        )
         cbs.append(
             TrainingCallback(
                 [TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
