@@ -195,6 +195,7 @@ class EdgeAwareLogL1(nn.Module):
         self.logl1 = LogL1(implementation="per-pixel")
 
     def forward(self, pred: Tensor, gt: Tensor, rgb: Tensor, mask: Optional[Tensor]):
+        pred = pred.unsqueeze(-1) if pred.dim() == 2 else pred
         logl1 = self.logl1(pred, gt)
 
         grad_img_x = torch.mean(

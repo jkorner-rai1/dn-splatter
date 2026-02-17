@@ -20,6 +20,8 @@ from dn_splatter.metrics import DepthMetrics, NormalMetrics, RGBMetrics
 from dn_splatter.regularization_strategy import (
     DNRegularization,
 )
+from gsplat.strategy import DefaultStrategy
+
 from dn_splatter.regularization_strategy import AGSMeshRegularization, DNRegularization
 
 from dn_splatter.utils.camera_utils import get_colored_points_from_depth, project_pix
@@ -35,6 +37,7 @@ from gsplat import rasterization
 # from gsplat import rasterize_gaussians
 # from gsplat.cuda_legacy._torch_impl import quat_to_rotmat
 # from gsplat.cuda_legacy._wrapper import num_sh_bases
+from nerfstudio.model_components.lib_bilagrid import BilateralGrid, color_correct, slice, total_variation_loss
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
 from nerfstudio.cameras.cameras import Cameras
 from nerfstudio.data.scene_box import OrientedBox
@@ -245,7 +248,9 @@ class DNSplatterModel(SplatfactoModel):
                 normals = torch.bmm(rots, normals[:, :, None]).squeeze(-1)
                 normals = F.normalize(normals, dim=1)
                 normals = torch.nn.Parameter(normals.detach())
-
+                
+        
+        
         self.gauss_params = torch.nn.ParameterDict(
             {
                 "means": means,
@@ -285,6 +290,33 @@ class DNSplatterModel(SplatfactoModel):
 
         if not self.config.use_normal_loss:
             self.regularization_strategy.normal_loss = None
+        
+        if self.config.use_bilateral_grid:
+            self.bil_grids = BilateralGrid(
+                num=self.num_train_data,
+                grid_X=self.config.grid_shape[0],
+                grid_Y=self.config.grid_shape[1],
+                grid_W=self.config.grid_shape[2],
+            )
+            
+        self.strategy = DefaultStrategy(
+            prune_opa=self.config.cull_alpha_thresh,
+            grow_grad2d=self.config.densify_grad_thresh,
+            grow_scale3d=self.config.densify_size_thresh,
+            grow_scale2d=self.config.split_screen_size,
+            prune_scale3d=self.config.cull_scale_thresh,
+            prune_scale2d=self.config.cull_screen_size,
+            refine_scale2d_stop_iter=self.config.stop_screen_size_at,
+            refine_start_iter=self.config.warmup_length,
+            refine_stop_iter=self.config.stop_split_at,
+            reset_every=self.config.reset_alpha_every * self.config.refine_every,
+            refine_every=self.config.refine_every,
+            pause_refine_after_reset=self.num_train_data + self.config.refine_every,
+            absgrad=self.config.use_absgrad,
+            revised_opacity=False,
+            verbose=True,
+        )
+        self.strategy_state = self.strategy.initialize_state(scene_scale=1.0)
 
     @property
     def normals(self):
@@ -516,170 +548,126 @@ class DNSplatterModel(SplatfactoModel):
 
         
         
+        # quats_crop = quats_crop / quats_crop.norm(dim=-1, keepdim=True)
+        # normals = F.one_hot(
+        #     torch.argmin(scales_crop, dim=-1), num_classes=3
+        # ).float()
+        # rots = quat_to_rotmat(quats_crop)
+        # normals = torch.bmm(rots, normals[:, :, None]).squeeze(-1)
+        # normals = F.normalize(normals, dim=1)
+        # viewdirs = (
+        #     -means_crop.detach() + camera.camera_to_worlds.detach()[..., :3, 3]
+        # )
+        # viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
+        # dots = (normals * viewdirs).sum(-1)
+        # negative_dot_indices = dots < 0
+        # normals[negative_dot_indices] = -normals[negative_dot_indices]
+        # # update parameter group normals
+        # self.gauss_params["normals"] = normals
+        # # convert normals from world space to camera space
+        # normals = normals @ camera.camera_to_worlds.squeeze(0)[:3, :3]
+
+        # xys = self.xys[0, ...].detach()
+
+        # normals_im: Tensor = rasterize_gaussians(  # type: ignore
+        #     xys,
+        #     self.depths[0, ...],
+        #     self.radii,
+        #     self.conics[0, ...],
+        #     self.num_tiles_hit[0, ...],
+        #     normals,
+        #     torch.sigmoid(opacities_crop),
+        #     H,
+        #     W,
+        #     BLOCK_WIDTH,
+        # )
+        
+        # # convert normals from [-1,1] to [0,1]
+        # normals_im = normals_im / normals_im.norm(dim=-1, keepdim=True)
+        # normals_im = (normals_im + 1) / 2
+        # 1. Calculate your normals exactly as you were before
+        quats_crop = quats_crop / quats_crop.norm(dim=-1, keepdim=True)
+        # (Assuming scales_crop is [N, 3])
+        
+        rots = quat_to_rotmat(quats_crop)
+        
+
+        # Orientation alignment (view-dependent flip)
+        viewdirs = (-means_crop.detach() + camera.camera_to_worlds.detach()[..., :3, 3])
+        viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
+
+        colors_rgb = spherical_harmonics(sh_degree_to_use, viewdirs.squeeze(), colors_crop)
+        min_scale_indices = torch.argmin(scales_crop, dim=-1)
         if self.config.predict_normals:
-            # quats_crop = quats_crop / quats_crop.norm(dim=-1, keepdim=True)
-            # normals = F.one_hot(
-            #     torch.argmin(scales_crop, dim=-1), num_classes=3
-            # ).float()
-            # rots = quat_to_rotmat(quats_crop)
-            # normals = torch.bmm(rots, normals[:, :, None]).squeeze(-1)
-            # normals = F.normalize(normals, dim=1)
-            # viewdirs = (
-            #     -means_crop.detach() + camera.camera_to_worlds.detach()[..., :3, 3]
-            # )
-            # viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
-            # dots = (normals * viewdirs).sum(-1)
-            # negative_dot_indices = dots < 0
-            # normals[negative_dot_indices] = -normals[negative_dot_indices]
-            # # update parameter group normals
-            # self.gauss_params["normals"] = normals
-            # # convert normals from world space to camera space
-            # normals = normals @ camera.camera_to_worlds.squeeze(0)[:3, :3]
-
-            # xys = self.xys[0, ...].detach()
-
-            # normals_im: Tensor = rasterize_gaussians(  # type: ignore
-            #     xys,
-            #     self.depths[0, ...],
-            #     self.radii,
-            #     self.conics[0, ...],
-            #     self.num_tiles_hit[0, ...],
-            #     normals,
-            #     torch.sigmoid(opacities_crop),
-            #     H,
-            #     W,
-            #     BLOCK_WIDTH,
-            # )
-            
-            # # convert normals from [-1,1] to [0,1]
-            # normals_im = normals_im / normals_im.norm(dim=-1, keepdim=True)
-            # normals_im = (normals_im + 1) / 2
-            # 1. Calculate your normals exactly as you were before
-            quats_crop = quats_crop / quats_crop.norm(dim=-1, keepdim=True)
-            # (Assuming scales_crop is [N, 3])
             normals = F.one_hot(torch.argmin(scales_crop, dim=-1), num_classes=3).float()
-            rots = quat_to_rotmat(quats_crop)
             normals = torch.bmm(rots, normals[:, :, None]).squeeze(-1)
             normals = F.normalize(normals, dim=1)
-
-            # Orientation alignment (view-dependent flip)
-            viewdirs = (-means_crop.detach() + camera.camera_to_worlds.detach()[..., :3, 3])
-            viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
             dots = (normals * viewdirs).sum(-1)
             normals[dots < 0] = -normals[dots < 0]
-
-            # Convert to camera space as before
             normals_cam = normals @ camera.camera_to_worlds.squeeze(0)[:3, :3]
-
-            # 1. Compute view directions (normalized)
-            # Note: 'means_crop' is world space, camera position is world space
-            viewdirs = viewdirs.squeeze()
-            # 2. Convert SH to RGB [N, 3]
-            # This matches the internal kernel math
-            
-            colors_rgb = spherical_harmonics(sh_degree_to_use, viewdirs, colors_crop)
-
-            # 3. Prepare Normals [N, 3]
-            # (Assuming you use the manual quat_to_rotmat defined previously)
-            #  rots = quat_to_rotmat(quats_crop)
-            min_scale_indices = torch.argmin(scales_crop, dim=-1)
-            # normals = rots[torch.arange(len(min_scale_indices)), :, min_scale_indices]
-
-            # View-dependent flip (so normals face the camera)
-
-            # Transform to Camera Space
-            # world_to_cam_rot = camera.camera_to_worlds.squeeze(0)[:3, :3].T
-            #  normals_cam = normals @ world_to_cam_rot
-
-            # 4. Concatenate into [N, 6]
-            concatenated_features = torch.cat([colors_rgb, normals_cam], dim=-1)
-
-            # 5. Rasterize
-            # We set sh_degree=None because we already 'baked' the SH into RGB
-            render, alpha, info = rasterization(
-                means=means_crop,
-                quats=quats_crop,
-                scales=torch.exp(scales_crop),
-                opacities=torch.sigmoid(opacities_crop).squeeze(-1),
-                colors=concatenated_features,
-                viewmats=viewmat,
-                Ks=K,
-                width=W,
-                height=H,
-                tile_size=BLOCK_WIDTH,
-                sh_degree=None,
-                sparse_grad=False,
-                absgrad=True,
-                rasterize_mode=self.config.rasterize_mode,
-                render_mode=render_mode,
-                backgrounds=None,
+            concatenated_features = torch.cat([colors_rgb, normals_cam], dim=-1)    
+        else:
+            concatenated_features = colors_rgb
+        
+        viewdirs = viewdirs.squeeze()
+       
+        
+        
+        # 5. Rasterize
+        # We set sh_degree=None because we already 'baked' the SH into RGB
+        render, alpha, self.info  = rasterization(
+            means=means_crop,
+            quats=quats_crop,
+            scales=torch.exp(scales_crop),
+            opacities=torch.sigmoid(opacities_crop).squeeze(-1),
+            colors=concatenated_features,
+            viewmats=viewmat,
+            Ks=K,
+            width=W,
+            height=H,
+            tile_size=BLOCK_WIDTH,
+            sh_degree=None,
+            sparse_grad=False,
+            absgrad=self.strategy.absgrad,
+            rasterize_mode=self.config.rasterize_mode,
+            render_mode=render_mode,
+            backgrounds=None,
+        )
+        self.info["radii"] = self.info["radii"].unsqueeze(0) # self.info["radii"] is supposed to have two dimensions for gsplat package
+        if self.training:
+            self.strategy.step_pre_backward(
+                self.gauss_params, self.optimizers, self.strategy_state, self.step, self.info
             )
-            if self.training and info["means2d"].requires_grad:
-                info["means2d"].retain_grad()
-            self.xys = info["means2d"]  # [1, N, 2]
-            self.radii = info["radii"]  # [N]
-            alpha = alpha[:, ...]
-            self.depths = info["depths"]
-            self.conics = info["conics"]
-            self.num_tiles_hit = info["tiles_per_gauss"]
-            # 4. SPLIT THE OUTPUT
-            # render will have shape [Batch, H, W, 6] (or more if RGB+ED was used)
-            rgb = render[:, :, :, 0:3]
-            background = self._get_background_color()
-            rgb = rgb * alpha + (1 - alpha) * background
+        
+        # 4. SPLIT THE OUTPUT
+        # render will have shape [Batch, H, W, 6] (or more if RGB+ED was used)
+        rgb = render[:, :, :, 0:3]
+        background = self._get_background_color()
+        rgb = rgb * alpha + (1 - alpha) * background
+        
+        out = {
+            "rgb": rgb.squeeze(0),
+            "accumulation": alpha.squeeze(0),
+            "background": background,
+        }
+        
+        
+        if self.config.predict_normals:
             normals_im = render[:, :, :, 3:6]
-            
             if normals_im.min()<-.1:
                 # convert normals from [-1,1] to [0,1]
                 normals_im = normals_im / normals_im.norm(dim=-1, keepdim=True)
                 normals_im = (normals_im + 1) / 2
-            depth_im = render[0, ..., 6:7] if render_mode == "RGB+ED" else None
+            out["normal"] = normals_im.squeeze(0) # predicted normal from gaussians
+        if render_mode == "RGB+ED":
+            depth_im = render[0, ..., -1]
+            if len(depth_im.shape) == 2:
+                depth_im = depth_im.unsqueeze(-1)
         else:
-            render, alpha, info = rasterization(
-                means=means_crop,
-                quats=quats_crop / quats_crop.norm(dim=-1, keepdim=True),
-                scales=torch.exp(scales_crop),
-                opacities=torch.sigmoid(opacities_crop).squeeze(-1),
-                colors=colors_crop,
-                viewmats=viewmat,  # [1, 4, 4]
-                Ks=K,  # [1, 3, 3]
-                width=W,
-                height=H,
-                tile_size=BLOCK_WIDTH,
-                packed=False,
-                near_plane=0.01,
-                far_plane=1e10,
-                render_mode=render_mode,
-                sh_degree=sh_degree_to_use,
-                sparse_grad=False,
-                absgrad=True,
-                rasterize_mode=self.config.rasterize_mode,
-                # set some threshold to disregrad small gaussians for faster rendering.
-                # radius_clip=3.0,
-            )
-            if self.training and info["means2d"].requires_grad:
-                info["means2d"].retain_grad()
-            self.xys = info["means2d"]  # [1, N, 2]
-            self.radii = info["radii"][0]  # [N]
-            alpha = alpha[:, ...]
-            self.depths = info["depths"]
-            self.conics = info["conics"]
-            self.num_tiles_hit = info["tiles_per_gauss"]
-
-            background = self._get_background_color()
-            rgb = render[:, ..., :3] + (1 - alpha) * background
-            rgb = torch.clamp(rgb, 0.0, 1.0)
-            normals_im = torch.full(rgb.shape, 0.0)
-            # visible gaussians
-            self.vis_indices = torch.where(self.radii > 0)[0]
-
-            if render_mode == "RGB+ED":
-                depth_im = render[:, ..., 3:4]
-                depth_im = torch.where(
-                    alpha > 0, depth_im, depth_im.detach().max()
-                ).squeeze(0)
-            else:
-                depth_im = None
+            depth_im = None
+        out["depth"] = depth_im #I am following here the dn-spaltter code that sets depth to none if not rendered with RGB+ED instead of just not adding it
+    
+        #========================================================================
 
         if hasattr(camera, "metadata"):
             if camera.metadata is not None and "cam_idx" in camera.metadata:
@@ -690,30 +678,30 @@ class DNSplatterModel(SplatfactoModel):
         c2w = c2w @ torch.diag(
             torch.tensor([1, -1, -1, 1], device=c2w.device, dtype=c2w.dtype)
         )
-        surface_normal = normal_from_depth_image(
-            depths=depth_im.detach(),
-            fx=self.camera.fx.item(),
-            fy=self.camera.fy.item(),
-            cx=self.camera.cx.item(),
-            cy=self.camera.cy.item(),
-            img_size=(self.camera.width.item(), self.camera.height.item()),
-            c2w=torch.eye(4, dtype=torch.float, device=depth_im.device),
-            device=self.device,
-            smooth=False,
-        )
-        surface_normal = surface_normal @ torch.diag(
-            torch.tensor([1, -1, -1], device=depth_im.device, dtype=depth_im.dtype)
-        )
-        surface_normal = (1 + surface_normal) / 2
+        
+        
+        
+        if depth_im is not None:
+            surface_normal = normal_from_depth_image(
+                depths=depth_im.detach(),
+                fx=self.camera.fx.item(),
+                fy=self.camera.fy.item(),
+                cx=self.camera.cx.item(),
+                cy=self.camera.cy.item(),
+                img_size=(self.camera.width.item(), self.camera.height.item()),
+                c2w=torch.eye(4, dtype=torch.float, device=depth_im.device),
+                device=self.device,
+                smooth=False,
+            )
+            surface_normal = surface_normal @ torch.diag(
+                torch.tensor([1, -1, -1], device=depth_im.device, dtype=depth_im.dtype)
+            )
+            surface_normal = (1 + surface_normal) / 2
+            out["surface_normal"] = surface_normal
+            out["depth"] = depth_im
 
-        return {
-            "rgb": rgb.squeeze(0),
-            "depth": depth_im,
-            "normal": normals_im,  # predicted normal from gaussians
-            "surface_normal": surface_normal,  # normal from surface / depth
-            "accumulation": alpha.squeeze(0),
-            "background": background,
-        }
+        return out
+            
 
     def get_loss_dict(
         self, outputs, batch, metrics_dict=None
@@ -829,8 +817,8 @@ class DNSplatterModel(SplatfactoModel):
             )
 
         main_loss = rgb_loss + regularization_strategy_loss
-
-        return {"main_loss": main_loss, "scale_reg": scale_reg}
+        
+        return {"main_loss": main_loss, "scale_reg": scale_reg} 
 
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
@@ -887,7 +875,6 @@ class DNSplatterModel(SplatfactoModel):
                 if outputs["depth"].dim() == 4
                 else outputs["depth"]
             )
-            predicted_depth = outputs["depth"]
             (abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3) = self.depth_metrics(
                 predicted_depth.permute(2, 0, 1), sensor_depth_gt.permute(2, 0, 1)
             )
@@ -1030,6 +1017,7 @@ class DNSplatterModel(SplatfactoModel):
         return metrics_dict, images_dict
     
     def after_train(self, step: int):
+        assert False, "Legacy code from old version"
         assert step == self.step
         # to save some training time, we no longer need to update those stats post refinement
         if self.step >= self.config.stop_split_at:
@@ -1068,6 +1056,7 @@ class DNSplatterModel(SplatfactoModel):
         This function deletes gaussians with under a certain opacity threshold
         extra_cull_mask: a mask indicates extra gaussians to cull besides existing culling criterion
         """
+        assert False, "LEgacy code from old version"
         n_bef = self.num_points
         # cull transparent ones
         culls = (torch.sigmoid(self.opacities) < self.config.cull_alpha_thresh).squeeze()
@@ -1104,27 +1093,30 @@ class DNSplatterModel(SplatfactoModel):
         cbs = []
         cbs.append(
             TrainingCallback(
-                [TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], self.step_cb,
+                [TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                self.step_cb,
                 args=[training_callback_attributes.optimizers],
-            )
-        )
-       # The order of these matters
-        cbs.append(
-            TrainingCallback(
-                [TrainingCallbackLocation.AFTER_TRAIN_ITERATION], self.after_train
             )
         )
         cbs.append(
             TrainingCallback(
                 [TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                self.refinement_after,
-                update_every_num_iters=self.config.refine_every,
-                args=[training_callback_attributes.optimizers],
+                self.step_post_backward,
             )
         )
-
         return cbs
 
+    def step_post_backward(self, step):
+        assert step == self.step
+        self.strategy.step_post_backward(
+            params=self.gauss_params,
+            optimizers=self.optimizers,
+            state=self.strategy_state,
+            step=self.step,
+            info=self.info,
+            packed=True
+        )
+        
     def sample_points_in_gaussians(
         self,
         num_samples: int,

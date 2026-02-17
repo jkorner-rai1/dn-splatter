@@ -93,7 +93,7 @@ dn_splatter_colorwarmup = MethodSpecification(
             "means": {
                 "optimizer": AdamOptimizerConfig(lr=1.6e-4, eps=1e-15),
                 "scheduler": FreezeThenDecaySchedulerConfig(
-                    freeze_steps=1000,
+                    freeze_steps=500,
                     lr_final=1.6e-6,
                     max_steps=30000,
                 ),
@@ -101,14 +101,14 @@ dn_splatter_colorwarmup = MethodSpecification(
             "features_dc": {
                 "optimizer": AdamOptimizerConfig(lr=0.0025, eps=1e-15),
                 "scheduler": MultiStepLRSchedulerConfig(
-                    milestones=[1000],
+                    milestones=[500],
                     lrs=[0.008, 0.0025],  # Keep lr the same but change scheduler to step after warmup),
                 ),
             },
             "features_rest": {
                 "optimizer": AdamOptimizerConfig(lr=0.0025 / 20, eps=1e-15),
                 "scheduler": FreezeThenFixedSchedulerConfig(
-                    freeze_steps=1000,
+                    freeze_steps=500,
                     fixed_lr=0.0025 / 20,
                 ),
             },
@@ -119,7 +119,7 @@ dn_splatter_colorwarmup = MethodSpecification(
             "scales": {
                 "optimizer": AdamOptimizerConfig(lr=0.005, eps=1e-15),
                 "scheduler": MultiStepLRSchedulerConfig(
-                    milestones=[1000],
+                    milestones=[500],
                     lrs=[0.001, 0.005],  # Keep lr the same but change scheduler to step after warmup),
                 ),
             },
@@ -130,7 +130,7 @@ dn_splatter_colorwarmup = MethodSpecification(
             "camera_opt": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
                 "scheduler": FreezeThenDecaySchedulerConfig(
-                    freeze_steps=1000,
+                    freeze_steps=500,
                     lr_final=5e-7,
                     max_steps=30000,
                 ),
@@ -140,7 +140,7 @@ dn_splatter_colorwarmup = MethodSpecification(
                     lr=1e-3, eps=1e-15
                 ),  # this does nothing, its just here to make the trainer happy
                 "scheduler": FreezeThenFixedSchedulerConfig(
-                    freeze_steps=1000,
+                    freeze_steps=500,
                     fixed_lr=1e-3,
                 ),
             },
