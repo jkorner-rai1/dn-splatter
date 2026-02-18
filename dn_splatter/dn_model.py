@@ -93,6 +93,10 @@ class DNSplatterModelConfig(SplatfactoModelConfig):
     """Choose which smooth loss to train with Literal["TV", "EdgeAwareTV")"""
     depth_lambda: float = 0.0
     """Regularizer for depth loss"""
+    depth_lambda_final: Optional[float] = None
+    """Final value for depth lambda (for exponential decay). If None, uses depth_lambda"""
+    depth_lambda_max_steps: int = 30000
+    """Max steps for depth lambda exponential decay"""
     use_depth_smooth_loss: bool = False
     """Whether to enable depth smooth loss or not"""
     smooth_loss_lambda: float = 0.1
@@ -274,7 +278,11 @@ class DNSplatterModel(SplatfactoModel):
         )
 
         if self.config.regularization_strategy == "dn-splatter":
-            self.regularization_strategy = DNRegularization()
+            self.regularization_strategy = DNRegularization(
+                depth_lambda=self.config.depth_lambda,
+                depth_lambda_final=self.config.depth_lambda_final,
+                depth_lambda_max_steps=self.config.depth_lambda_max_steps,
+            )
         elif self.config.regularization_strategy == "ags-mesh":
             self.regularization_strategy = AGSMeshRegularization()
         else:
@@ -798,6 +806,7 @@ class DNSplatterModel(SplatfactoModel):
 
         if self.config.regularization_strategy == "dn-splatter":
             regularization_strategy_loss = self.regularization_strategy(
+                step=self.step,
                 pred_depth=depth_out,
                 gt_depth=depth_gt,
                 pred_normal=pred_normal,

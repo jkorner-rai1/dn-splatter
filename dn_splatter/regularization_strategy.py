@@ -130,12 +130,16 @@ class DNRegularization(RegularizationStrategy):
         depth_loss_type: Optional[DepthLossType] = DepthLossType.EdgeAwareLogL1,
         depth_lambda: float = 0.2,
         normal_lambda: float = 0.1,
+        depth_lambda_final: Optional[float] = None,
+        depth_lambda_max_steps: int = 30000,
     ):
         super().__init__()
         self.depth_tolerance = depth_tolerance
         self.depth_loss_type = depth_loss_type
         self.depth_loss = DepthLoss(self.depth_loss_type)
-        self.depth_lambda = depth_lambda
+        self.depth_lambda_initial = depth_lambda
+        self.depth_lambda_final = depth_lambda_final if depth_lambda_final is not None else depth_lambda
+        self.depth_lambda_max_steps = depth_lambda_max_steps
 
         self.normal_loss_type: NormalLossType = NormalLossType.L1
         self.normal_loss = NormalLoss(self.normal_loss_type)
@@ -143,19 +147,27 @@ class DNRegularization(RegularizationStrategy):
         self.normal_smooth_loss = NormalLoss(self.normal_smooth_loss_type)
         self.normal_lambda = normal_lambda
 
-    def get_loss(self, pred_depth, gt_depth, pred_normal, gt_normal, **kwargs):
+    def get_depth_lambda(self, step: int) -> float:
+        """Compute exponentially decayed depth_lambda based on current step"""
+        if step >= self.depth_lambda_max_steps:
+            return self.depth_lambda_final
+        t = step / self.depth_lambda_max_steps
+        return self.depth_lambda_initial * (self.depth_lambda_final / self.depth_lambda_initial) ** t
+
+    def get_loss(self, step, pred_depth, gt_depth, pred_normal, gt_normal, **kwargs):
         """Regularization loss"""
 
         depth_loss, normal_loss = 0.0, 0.0
+        current_depth_lambda = self.get_depth_lambda(step)
         if self.depth_loss is not None:
-            depth_loss = self.get_depth_loss(pred_depth, gt_depth, **kwargs)
+            depth_loss = self.get_depth_loss(pred_depth, gt_depth, current_depth_lambda, **kwargs)
         if self.normal_loss is not None:
             normal_loss = self.get_normal_loss(pred_normal, gt_normal, **kwargs)
         scales = kwargs["scales"]
         scale_loss = self.get_scale_loss(scales=scales)
         return depth_loss + normal_loss + scale_loss
 
-    def get_depth_loss(self, pred_depth, gt_depth, **kwargs):
+    def get_depth_loss(self, pred_depth, gt_depth, depth_lambda, **kwargs):
         """Depth loss"""
 
         valid_gt_mask = gt_depth > self.depth_tolerance
@@ -173,7 +185,7 @@ class DNRegularization(RegularizationStrategy):
                 local_depth_loss(pred_depth, gt_depth.float()) * valid_gt_mask.sum()
             ) / valid_gt_mask.sum()
             depth_loss = (
-                mono_depth_loss_pearson + self.depth_lambda * mono_depth_loss_local
+                mono_depth_loss_pearson + depth_lambda * mono_depth_loss_local
             )
 
         else:
@@ -181,7 +193,7 @@ class DNRegularization(RegularizationStrategy):
                 pred_depth[valid_gt_mask], gt_depth[valid_gt_mask].float()
             )
 
-        depth_loss += self.depth_lambda * depth_loss
+        depth_loss += depth_lambda * depth_loss
 
         return depth_loss
 

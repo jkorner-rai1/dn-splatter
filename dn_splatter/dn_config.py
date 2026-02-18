@@ -25,7 +25,13 @@ dn_splatter = MethodSpecification(
             datamanager=DNSplatterManagerConfig(
                 dataparser=NormalNerfstudioConfig(load_3D_points=True)
             ),
-            model=DNSplatterModelConfig(regularization_strategy="dn-splatter"),
+            model=DNSplatterModelConfig(
+                regularization_strategy="dn-splatter",
+                use_depth_loss=True,
+                depth_lambda=0.2,
+                depth_lambda_final=0.2,
+                depth_lambda_max_steps=30000,
+            ),
         ),
         optimizers={
             "means": {
@@ -87,7 +93,13 @@ dn_splatter_colorwarmup = MethodSpecification(
             datamanager=DNSplatterManagerConfig(
                 dataparser=NormalNerfstudioConfig(load_3D_points=True)
             ),
-            model=DNSplatterModelConfig(regularization_strategy="dn-splatter"),
+            model=DNSplatterModelConfig(
+                regularization_strategy="dn-splatter",
+                use_depth_loss=True,
+                depth_lambda=0.2,
+                depth_lambda_final=0.2,
+                depth_lambda_max_steps=30000,
+            ),
         ),
         optimizers={
             "means": {
